@@ -8,6 +8,25 @@ from Crypto.Cipher import AES
 from datetime import datetime
 import binascii
 
+# get_if_raw_hwaddr was removed in Scapy 2.7; provide ioctl fallback for Linux
+if 'get_if_raw_hwaddr' not in dir():
+	try:
+		from scapy.arch.common import get_if_raw_hwaddr
+	except ImportError:
+		try:
+			from scapy.arch import get_if_raw_hwaddr
+		except ImportError:
+			import socket as _socket, struct as _struct, fcntl as _fcntl
+			def get_if_raw_hwaddr(iface):
+				SIOCGIFHWADDR = 0x8927
+				s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM, 0)
+				try:
+					d = _struct.pack('256s', iface[:15].encode())
+					res = _fcntl.ioctl(s.fileno(), SIOCGIFHWADDR, d)
+					return _struct.unpack_from('H6s', res, 16)
+				finally:
+					s.close()
+
 #### Constants ####
 
 FRAME_TYPE_MANAGEMENT = 0

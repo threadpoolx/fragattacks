@@ -8,11 +8,57 @@ from libwifi import *
 import abc, sys, socket, struct, time, subprocess, atexit, select, copy
 import os.path
 from wpaspy import Ctrl
-from scapy.contrib.wpa_eapol import WPA_key
+try:
+	from scapy.contrib.wpa_eapol import WPA_key
+	def _eapol_key_info(pkt):
+		return pkt[WPA_key].key_info
+except ImportError:
+	# Scapy 2.5+ removed scapy.contrib.wpa_eapol; EAPOL key handling is
+	# now in scapy.layers.eap as EAPOL_KEY with individual bit fields.
+	from scapy.layers.eap import EAPOL_KEY as WPA_key
+	def _eapol_key_info(pkt):
+		ek = pkt[WPA_key]
+		return (ek.key_descriptor_type_version |
+			(ek.key_type          << 3)  |
+			(ek.install           << 6)  |
+			(ek.key_ack           << 7)  |
+			(ek.has_key_mic       << 8)  |
+			(ek.secure            << 9)  |
+			(ek.error             << 10) |
+			(ek.request           << 11) |
+			(ek.encrypted_key_data << 12) |
+			(ek.smk_message       << 13))
 try:
 	from scapy.arch.common import get_if_raw_hwaddr
 except ImportError:
-	from scapy.arch import get_if_raw_hwaddr
+	try:
+		from scapy.arch import get_if_raw_hwaddr
+	except ImportError:
+		# Scapy 2.7+ removed get_if_raw_hwaddr on Linux; implement via ioctl
+		import socket as _socket, struct as _struct, fcntl as _fcntl
+		def get_if_raw_hwaddr(iface):
+			SIOCGIFHWADDR = 0x8927
+			s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM, 0)
+			try:
+				d = _struct.pack('256s', iface[:15].encode())
+				res = _fcntl.ioctl(s.fileno(), SIOCGIFHWADDR, d)
+				return _struct.unpack_from('H6s', res, 16)
+			finally:
+				s.close()
+
+# scapy.arch.get_if_index was removed in Scapy 2.7; patch it back in via ioctl
+if not hasattr(scapy.arch, 'get_if_index'):
+	import fcntl as _fcntl
+	def _get_if_index(iface):
+		SIOCGIFINDEX = 0x8933
+		s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, 0)
+		try:
+			d = struct.pack('256s', iface[:15].encode())
+			res = _fcntl.ioctl(s.fileno(), SIOCGIFINDEX, d)
+			return struct.unpack_from('I', res, 16)[0]
+		finally:
+			s.close()
+	scapy.arch.get_if_index = _get_if_index
 
 FRAGVERSION = "1.3"
 
@@ -495,11 +541,12 @@ class Station():
 		# Track return value of possible trigger Action function
 		result = None
 
-		key_type    = eapol.key_info & 0x0008
-		key_ack     = eapol.key_info & 0x0080
-		key_mic     = eapol.key_info & 0x0100
-		key_secure  = eapol.key_info & 0x0200
-		key_request = eapol.key_info & 0x0800
+		key_info    = _eapol_key_info(eapol)
+		key_type    = key_info & 0x0008
+		key_ack     = key_info & 0x0080
+		key_mic     = key_info & 0x0100
+		key_secure  = key_info & 0x0200
+		key_request = key_info & 0x0800
 		# Detect Msg3/4 assumig WPA2 is used --- XXX support WPA1 as well
 		is_msg3_or_4 = key_secure != 0
 
@@ -540,7 +587,7 @@ class Station():
 			# - Some routers such as the RT-AC51U do the 4-way rekey HS in plaintext.
 
 			plaintext = self.options.rekey_plaintext
-			if WPA_key in eapol and eapol[WPA_key].key_info & 2048:
+			if WPA_key in eapol and _eapol_key_info(eapol) & 0x0800:
 				plaintext = False
 
 			self.send_mon(eapol, plaintext=plaintext)
