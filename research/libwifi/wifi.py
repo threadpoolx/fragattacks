@@ -3,6 +3,7 @@
 # This code may be distributed under the terms of the BSD license.
 # See README for more details.
 from scapy.all import *
+from scapy.arch import L2Socket, attach_filter
 from Crypto.Cipher import AES
 from datetime import datetime
 import binascii
@@ -102,7 +103,7 @@ def addr2bin(addr):
 
 def get_channel(iface):
 	output = str(subprocess.check_output(["iw", iface, "info"]))
-	p = re.compile("channel (\d+)")
+	p = re.compile(r"channel (\d+)")
 	m = p.search(output)
 	if m == None: return None
 	return int(m.group(1))
@@ -123,7 +124,7 @@ def set_macaddress(iface, macaddr):
 
 def get_iface_type(iface):
 	output = str(subprocess.check_output(["iw", iface, "info"]))
-	p = re.compile("type (\w+)")
+	p = re.compile(r"type (\w+)")
 	return str(p.search(output).group(1))
 
 def set_monitor_mode(iface, up=True, mtu=1500):
@@ -220,9 +221,12 @@ class ARP_sock(ARP_am):
 
 #### Packet Processing Functions ####
 
-# Compatibility with older Scapy versions
-if not "ORDER" in scapy.layers.dot11._rt_txflags:
-	scapy.layers.dot11._rt_txflags.append("ORDER")
+# Compatibility with older Scapy versions — _rt_txflags may not exist or already contain ORDER
+try:
+	if "ORDER" not in scapy.layers.dot11._rt_txflags:
+		scapy.layers.dot11._rt_txflags.append("ORDER")
+except AttributeError:
+	pass
 
 class MonitorSocket(L2Socket):
 	def __init__(self, iface, dumpfile=None, detect_injected=False, **kwargs):
@@ -384,7 +388,7 @@ def get_ccmp_payload(p):
 		# Extract encrypted payload:
 		# - Skip extended IV (4 bytes in total)
 		# - Exclude first 4 bytes of the CCMP MIC (note that last 4 are saved in the WEP ICV field)
-		return str(p.wepdata[4:-4])
+		return bytes(p.wepdata[4:-4])
 	elif Dot11CCMP in p:
 		return p[Dot11CCMP].data
 	elif Dot11TKIP in p:
@@ -484,7 +488,7 @@ def create_msdu_subframe(src, dst, payload, last=False):
 	payload = raw(payload)
 
 	total_length = len(p) + len(payload)
-	padding = ""
+	padding = b""
 	if not last and total_length % 4 != 0:
 		padding = b"\x00" * (4 - (total_length % 4))
 

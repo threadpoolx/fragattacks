@@ -9,7 +9,10 @@ import abc, sys, socket, struct, time, subprocess, atexit, select, copy
 import os.path
 from wpaspy import Ctrl
 from scapy.contrib.wpa_eapol import WPA_key
-from scapy.arch.common import get_if_raw_hwaddr
+try:
+	from scapy.arch.common import get_if_raw_hwaddr
+except ImportError:
+	from scapy.arch import get_if_raw_hwaddr
 
 FRAGVERSION = "1.3"
 
@@ -779,7 +782,17 @@ class Daemon(metaclass=abc.ABCMeta):
 				scapy.arch.get_if_index(self.nic_mon)
 			except IOError:
 				subprocess.call(["iw", self.nic_mon, "del"], stdout=subprocess.PIPE, stdin=subprocess.PIPE)
-				subprocess.check_output(["iw", self.nic_iface, "interface", "add", self.nic_mon, "type", "monitor"])
+				try:
+					subprocess.check_output(["iw", self.nic_iface, "interface", "add", self.nic_mon, "type", "monitor"],
+								stderr=subprocess.PIPE)
+				except subprocess.CalledProcessError as ex:
+					log(ERROR, "Failed to create virtual monitor interface {}: {}".format(self.nic_mon, ex.stderr.decode().strip()))
+					log(ERROR, "Try using --inject {} to skip virtual interface creation.".format(self.nic_iface))
+					quit(1)
+				# Give the kernel time to initialise the new virtual interface before use.
+				# Some drivers (e.g. mt76) crash with a null-pointer dereference if we
+				# open a socket on the interface immediately after iw returns.
+				time.sleep(0.5)
 
 		# 2.A Remember whether to need to use injection workarounds.
 		driver = get_device_driver(self.nic_mon)
@@ -1242,7 +1255,7 @@ class Supplicant(Daemon):
 			# When using a separate interface to inject, switch to correct channel
 			self.follow_channel()
 
-			p = re.compile("Associated with (.*)")
+			p = re.compile(r"Associated with (.*)")
 			bss = p.search(msg).group(1)
 			self.station.handle_connecting(bss)
 

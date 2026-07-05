@@ -5,7 +5,8 @@
 # See README for more details.
 
 # Note that tests_*.py files are imported automatically
-import glob, importlib, argparse
+import glob, importlib, argparse, warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 from fraginternals import *
 
 # ----------------------------------- Main Function -----------------------------------
